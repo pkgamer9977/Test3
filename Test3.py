@@ -4,6 +4,7 @@ import ssl
 import json
 import time
 import uuid
+import websockets
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
@@ -32,44 +33,59 @@ async def connect_to_wss(socks5_proxy, user_id):
 
                 async def send_ping():
                     while True:
-                        send_message = json.dumps(
-                            {"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
-                        logger.debug(f"Sending PING: {send_message}")
-                        await websocket.send(send_message)
-                        await asyncio.sleep(5)  # Interval between pings
+                        try:
+                            if websocket.open:
+                                send_message = json.dumps(
+                                    {"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
+                                logger.debug(f"Sending PING: {send_message}")
+                                await websocket.send(send_message)
+                            await asyncio.sleep(5)  # Interval between pings
+                        except websockets.exceptions.ConnectionClosedError as e:
+                            logger.error(f"WebSocket connection closed during PING: {e}")
+                            break
+                        except Exception as e:
+                            logger.error(f"Unexpected error in send_ping: {e}")
+                            break
 
                 # Start the ping task in the background
                 asyncio.create_task(send_ping())
 
                 while True:
-                    response = await websocket.recv()
-                    message = json.loads(response)
-                    logger.info(f"Received message: {message}")
+                    try:
+                        response = await websocket.recv()
+                        message = json.loads(response)
+                        logger.info(f"Received message: {message}")
 
-                    if message.get("action") == "AUTH":
-                        auth_response = {
-                            "id": message["id"],
-                            "origin_action": "AUTH",
-                            "result": {
-                                "browser_id": device_id,
-                                "user_id": user_id,
-                                "user_agent": custom_headers['User-Agent'],
-                                "timestamp": int(time.time()),
-                                "device_type": "desktop",
-                                "version": "4.29.0",
+                        if message.get("action") == "AUTH":
+                            auth_response = {
+                                "id": message["id"],
+                                "origin_action": "AUTH",
+                                "result": {
+                                    "browser_id": device_id,
+                                    "user_id": user_id,
+                                    "user_agent": custom_headers['User-Agent'],
+                                    "timestamp": int(time.time()),
+                                    "device_type": "desktop",
+                                    "version": "4.29.0",
+                                }
                             }
-                        }
-                        logger.debug(f"Sending AUTH response: {auth_response}")
-                        await websocket.send(json.dumps(auth_response))
+                            logger.debug(f"Sending AUTH response: {auth_response}")
+                            await websocket.send(json.dumps(auth_response))
 
-                    elif message.get("action") == "PONG":
-                        pong_response = {"id": message["id"], "origin_action": "PONG"}
-                        logger.debug(f"Sending PONG response: {pong_response}")
-                        await websocket.send(json.dumps(pong_response))
+                        elif message.get("action") == "PONG":
+                            pong_response = {"id": message["id"], "origin_action": "PONG"}
+                            logger.debug(f"Sending PONG response: {pong_response}")
+                            await websocket.send(json.dumps(pong_response))
 
+                    except websockets.exceptions.ConnectionClosedError as e:
+                        logger.error(f"Connection closed unexpectedly: {e}")
+                        break
+                    except Exception as e:
+                        logger.error(f"Unexpected error in WebSocket loop: {e}")
+                        break
         except Exception as e:
-            logger.error(f"Error: {e}")
-            logger.error(f"Error occurred with proxy: {socks5_proxy}")
+            logger.error(f"Error with proxy {socks5_proxy}: {e}")
+            await asyncio.sleep(5)  # Reconnect delay
 
 async def main():
     _user_id = input('Please Enter your user ID: ')
